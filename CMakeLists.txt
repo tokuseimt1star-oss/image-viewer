@@ -1,0 +1,32 @@
+cmake_minimum_required(VERSION 3.25)
+project(MassiGraModern VERSION 0.1.0 LANGUAGES C CXX)
+if(NOT WIN32)
+  message(FATAL_ERROR "MassiGra Modern is a Windows desktop application.")
+endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+find_package(LibArchive REQUIRED)
+find_package(WebP CONFIG REQUIRED)
+find_package(avif CONFIG REQUIRED)
+if(TARGET avif::avif)
+  set(AVIF_TARGET avif::avif)
+elseif(TARGET avif_static)
+  set(AVIF_TARGET avif_static)
+elseif(TARGET avif)
+  set(AVIF_TARGET avif)
+else()
+  message(FATAL_ERROR "libavif package did not export a known CMake target")
+endif()
+add_executable(MassiGraModern WIN32 src/main.cpp)
+target_compile_definitions(MassiGraModern PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(MassiGraModern PRIVATE
+  LibArchive::LibArchive
+  WebP::webp
+  ${AVIF_TARGET}
+  d2d1 windowscodecs ole32 shell32 shlwapi comdlg32
+)
+if(MSVC)
+  target_compile_options(MassiGraModern PRIVATE /W4 /permissive- /EHsc)
+  target_link_options(MassiGraModern PRIVATE /SUBSYSTEM:WINDOWS)
+endif()
