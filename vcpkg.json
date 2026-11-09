@@ -1,0 +1,9 @@
+{
+  "name": "massigra-modern",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "libwebp",
+    { "name": "libavif", "features": ["dav1d"] },
+    "libarchive"
+  ]
+}
