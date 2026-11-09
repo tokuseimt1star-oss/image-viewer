@@ -24,7 +24,7 @@ target_link_libraries(MassiGraModern PRIVATE
   LibArchive::LibArchive
   WebP::webp
   ${AVIF_TARGET}
-  d2d1 windowscodecs ole32 shell32 shlwapi comdlg32
+  d2d1 windowscodecs ole32 shell32 shlwapi comdlg32 advapi32
 )
 if(MSVC)
   target_compile_options(MassiGraModern PRIVATE /W4 /permissive- /EHsc)
