@@ -1,0 +1,38 @@
+name: Build MassiGra Modern (Windows x64)
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+      - name: Configure
+        run: cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/Release/MassiGraModern.exe dist/
+          Get-FileHash dist/MassiGraModern.exe -Algorithm SHA256 | Format-List | Out-File dist/SHA256.txt
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: MassiGraModern-win-x64
+          path: dist/*
+          if-no-files-found: error
