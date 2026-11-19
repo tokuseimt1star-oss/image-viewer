@@ -27,6 +27,6 @@ target_link_libraries(MassiGraModern PRIVATE
   d2d1 windowscodecs ole32 shell32 shlwapi comdlg32 advapi32
 )
 if(MSVC)
-  target_compile_options(MassiGraModern PRIVATE /W4 /permissive- /EHsc)
+  target_compile_options(MassiGraModern PRIVATE /W4 /permissive- /EHsc /utf-8)
   target_link_options(MassiGraModern PRIVATE /SUBSYSTEM:WINDOWS)
 endif()
