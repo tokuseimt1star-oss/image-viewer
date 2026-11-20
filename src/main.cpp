@@ -78,13 +78,81 @@ static bool scanArchive(const std::wstring& p){ g_items.clear(); struct archive*
 static bool scanFolder(const std::wstring& p,const std::wstring& first={}){g_items.clear();try{for(auto& x:fs::directory_iterator(fs::path(p)))if(x.is_regular_file()&&imageExt(x.path().wstring()))g_items.push_back(x.path().wstring());}catch(...){return false;}std::sort(g_items.begin(),g_items.end(),[](auto&a,auto&b){return lower(fs::path(a).filename().wstring())<lower(fs::path(b).filename().wstring());});if(!first.empty()){auto it=std::find(g_items.begin(),g_items.end(),first);if(it!=g_items.end())g_index=(size_t)(it-g_items.begin());}return !g_items.empty();}
 static void setTitle(){std::wstring t=L"MassiGra Modern";if(!g_items.empty())t+=L"  -  "+(g_isArchive?fs::path(g_archive).filename().wstring():fs::path(g_items[g_index]).filename().wstring())+L"  ["+std::to_wstring(g_index+1)+L"/"+std::to_wstring(g_items.size())+L"]";SetWindowTextW(g_hwnd,t.c_str());}
 static void createBitmap(){g_bitmap.Reset();if(!g_target||g_image.bgra.empty())return;D2D1_BITMAP_PROPERTIES bp=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));g_target->CreateBitmap(D2D1::SizeU(g_image.w,g_image.h),g_image.bgra.data(),g_image.w*4,&bp,&g_bitmap);}
-static bool loadCurrent(){if(g_items.empty())return false;std::vector<uint8_t>b;bool r=g_isArchive?readArchiveEntry(g_archive,g_items[g_index],b):readFile(g_items[g_index],b);if(!r||!decodeBytes(b,g_items[g_index],g_image))return false;createBitmap();setTitle();InvalidateRect(g_hwnd,nullptr,FALSE);return true;}
-static void movePage(int d){if(g_items.empty())return;int64_t n=(int64_t)g_index+d;if(n<0)n=0;if(n>=(int64_t)g_items.size())n=(int64_t)g_items.size()-1;if((size_t)n!=g_index){g_index=(size_t)n;g_zoom=1;g_fit=true;if(!loadCurrent())MessageBeep(MB_ICONWARNING);}}
+static bool loadCurrent(){
+ if(g_items.empty()||g_index>=g_items.size())return false;
+ std::vector<uint8_t> bytes; Image next;
+ bool ok=g_isArchive?readArchiveEntry(g_archive,g_items[g_index],bytes):readFile(g_items[g_index],bytes);
+ if(!ok||!decodeBytes(bytes,g_items[g_index],next))return false;
+ g_image=std::move(next);createBitmap();setTitle();InvalidateRect(g_hwnd,nullptr,FALSE);return true;
+}
+static bool loadReadable(int direction,bool includeCurrent){
+ if(g_items.empty())return false;
+ int64_t pos=(int64_t)g_index+(includeCurrent?0:direction);
+ while(pos>=0&&pos<(int64_t)g_items.size()){
+  g_index=(size_t)pos;
+  if(loadCurrent())return true;
+  pos+=direction;
+ }
+ return false;
+}
+static void movePage(int direction){
+ if(g_items.empty())return;
+ size_t old=g_index;
+ if(loadReadable(direction,false)){g_zoom=1;g_fit=true;}
+ else g_index=old;
+}
+static bool isArchivePath(const fs::path& p){auto e=lower(p.extension().wstring());return e==L".zip"||e==L".cbz";}
+static bool openPathSilent(const std::wstring& p){
+ std::error_code ec;
+ if(!fs::exists(fs::path(p),ec)||ec)return false;
+ g_source=p;g_index=0;g_isArchive=false;g_archive.clear();g_items.clear();
+ if(isArchivePath(fs::path(p))){
+  g_isArchive=true;g_archive=p;
+  if(!scanArchive(p))return false;
+ }else if(fs::is_directory(fs::path(p),ec)){
+  if(ec||!scanFolder(p))return false;
+ }else if(imageExt(p)){
+  auto dir=fs::path(p).parent_path().wstring();
+  if(!scanFolder(dir,p))g_items={p};
+ }else return false;
+ return loadReadable(1,true);
+}
+static void openPath(const std::wstring& p){
+ if(!openPathSilent(p))MessageBoxW(g_hwnd,L"画像を読み込めませんでした。対応画像がない、書庫が暗号化されている、またはファイルが破損している可能性があります。",L"MassiGra Modern",MB_ICONWARNING);
+}
+static void jumpContainer(int direction){
+ fs::path current=g_isArchive?fs::path(g_archive):(g_source.empty()?fs::path():fs::path(g_source));
+ if(current.empty())return;
+ std::error_code ec;
+ fs::path parent=current.parent_path();
+ if(parent.empty()||!fs::is_directory(parent,ec))return;
+ std::vector<fs::path> candidates;
+ for(fs::directory_iterator it(parent,fs::directory_options::skip_permission_denied,ec),end;!ec&&it!=end;it.increment(ec)){
+  std::error_code typeError;
+  if(it->is_directory(typeError)||(!typeError&&it->is_regular_file(typeError)&&isArchivePath(it->path())))candidates.push_back(it->path());
+ }
+ std::sort(candidates.begin(),candidates.end(),[](const fs::path& a,const fs::path& b){return lower(a.filename().wstring())<lower(b.filename().wstring());});
+ auto match=std::find(candidates.begin(),candidates.end(),current);
+ if(match==candidates.end())return;
+ int64_t start=(int64_t)(match-candidates.begin())+direction;
+ for(int64_t i=start;i>=0&&i<(int64_t)candidates.size();i+=direction){
+  if(openPathSilent(candidates[(size_t)i].wstring())){g_zoom=1;g_fit=true;return;}
+ }
+ // Restore the previous image and its navigation state when nothing usable is found.
+ openPathSilent(current.wstring());
+}
+static void chooseFolder(){
+ BROWSEINFOW bi{};bi.hwndOwner=g_hwnd;bi.lpszTitle=L"表示するフォルダを選択";
+ PIDLIST_ABSOLUTE pidl=SHBrowseForFolderW(&bi);
+ if(!pidl)return;
+ wchar_t path[MAX_PATH]{};
+ if(SHGetPathFromIDListW(pidl,path))openPath(path);
+ CoTaskMemFree(pidl);
+}
 static void toggleFullscreen(){if(!g_fullscreen){g_oldStyle=(DWORD)GetWindowLongPtrW(g_hwnd,GWL_STYLE);GetWindowRect(g_hwnd,&g_oldRect);MONITORINFO mi{sizeof(mi)};GetMonitorInfoW(MonitorFromWindow(g_hwnd,MONITOR_DEFAULTTONEAREST),&mi);SetWindowLongPtrW(g_hwnd,GWL_STYLE,g_oldStyle&~(WS_CAPTION|WS_THICKFRAME));SetWindowPos(g_hwnd,HWND_TOP,mi.rcMonitor.left,mi.rcMonitor.top,mi.rcMonitor.right-mi.rcMonitor.left,mi.rcMonitor.bottom-mi.rcMonitor.top,SWP_FRAMECHANGED);g_fullscreen=true;}else{SetWindowLongPtrW(g_hwnd,GWL_STYLE,g_oldStyle);SetWindowPos(g_hwnd,nullptr,g_oldRect.left,g_oldRect.top,g_oldRect.right-g_oldRect.left,g_oldRect.bottom-g_oldRect.top,SWP_NOZORDER|SWP_FRAMECHANGED);g_fullscreen=false;} }
 static void render(){if(!g_target)return;g_target->BeginDraw();g_target->Clear(D2D1::ColorF(0.075f,0.075f,0.075f));if(g_bitmap){D2D1_SIZE_F s=g_target->GetSize();float w=(float)g_image.w,h=(float)g_image.h;float z=g_fit?std::min(s.width/w,s.height/h):g_zoom;w*=z;h*=z;D2D1_RECT_F r=D2D1::RectF((s.width-w)/2,(s.height-h)/2,(s.width+w)/2,(s.height+h)/2);g_target->DrawBitmap(g_bitmap.Get(),r,1.0f,D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);}if(FAILED(g_target->EndDraw())){g_target.Reset();g_bitmap.Reset();}}
 static void ensureTarget(){if(g_target)return;RECT r{};GetClientRect(g_hwnd,&r);g_factory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(),D2D1::HwndRenderTargetProperties(g_hwnd,D2D1::SizeU(r.right,r.bottom)),&g_target);createBitmap();}
 static void addVerb(HKEY root,const std::wstring& sub,const std::wstring& exe){HKEY k{};if(RegCreateKeyExW(root,sub.c_str(),0,nullptr,0,KEY_WRITE,nullptr,&k,nullptr)!=ERROR_SUCCESS)return;const wchar_t* label=L"MassiGra Modernで開く";RegSetValueExW(k,nullptr,0,REG_SZ,(const BYTE*)label,(DWORD)((wcslen(label)+1)*sizeof(wchar_t)));HKEY c{};if(RegCreateKeyExW(k,L"command",0,nullptr,0,KEY_WRITE,nullptr,&c,nullptr)==ERROR_SUCCESS){std::wstring cmd=L"\""+exe+L"\" \"%1\"";RegSetValueExW(c,nullptr,0,REG_SZ,(const BYTE*)cmd.c_str(),(DWORD)((cmd.size()+1)*sizeof(wchar_t)));RegCloseKey(c);}RegCloseKey(k);}
 static void registerShell(bool on){wchar_t exe[MAX_PATH]{};GetModuleFileNameW(nullptr,exe,MAX_PATH);std::wstring base=L"Software\\Classes\\";std::vector<std::wstring> keys;for(auto e:{L".jpg",L".jpeg",L".png",L".bmp",L".gif",L".tif",L".tiff",L".webp",L".avif",L".zip",L".cbz"})keys.push_back(base+L"SystemFileAssociations\\"+e+L"\\shell\\MassiGraModern");keys.push_back(base+L"Directory\\shell\\MassiGraModern");for(auto&k:keys){if(on)addVerb(HKEY_CURRENT_USER,k,exe);else RegDeleteTreeW(HKEY_CURRENT_USER,k.c_str());}SHChangeNotify(SHCNE_ASSOCCHANGED,SHCNF_IDLIST,nullptr,nullptr);}
-static void openPath(const std::wstring& p){g_source=p;g_index=0;g_isArchive=false;g_archive.clear();auto ext=lower(fs::path(p).extension().wstring());if(ext==L".zip"||ext==L".cbz"){g_isArchive=true;g_archive=p;if(!scanArchive(p)){MessageBoxW(g_hwnd,L"書庫を開けないか、対応画像がありません。",L"MassiGra Modern",MB_ICONERROR);return;}}else if(fs::is_directory(fs::path(p))){if(!scanFolder(p)){MessageBoxW(g_hwnd,L"フォルダ内に対応画像がありません。",L"MassiGra Modern",MB_ICONINFORMATION);return;}}else{auto dir=fs::path(p).parent_path().wstring();if(!scanFolder(dir,p)){g_items={p};}}loadCurrent();}
-static LRESULT CALLBACK wndProc(HWND h,UINT m,WPARAM w,LPARAM l){switch(m){case WM_SIZE:if(g_target)g_target->Resize(D2D1::SizeU(LOWORD(l),HIWORD(l)));InvalidateRect(h,nullptr,FALSE);return 0;case WM_PAINT:{PAINTSTRUCT ps;BeginPaint(h,&ps);ensureTarget();render();EndPaint(h,&ps);return 0;}case WM_MOUSEWHEEL:if(!(GetKeyState(VK_CONTROL)&0x8000))movePage(GET_WHEEL_DELTA_WPARAM(w)<0?1:-1);else{g_fit=false;g_zoom*=GET_WHEEL_DELTA_WPARAM(w)>0?1.15f:0.87f;InvalidateRect(h,nullptr,FALSE);}return 0;case WM_COMMAND: if(LOWORD(w)==ID_REGISTER_SHELL){registerShell(true);MessageBoxW(h,L"右クリックメニューを登録しました。",L"MassiGra Modern",MB_ICONINFORMATION);return 0;} if(LOWORD(w)==ID_UNREGISTER_SHELL){registerShell(false);MessageBoxW(h,L"右クリックメニューを解除しました。",L"MassiGra Modern",MB_ICONINFORMATION);return 0;} return 0;case WM_KEYDOWN:switch(w){case VK_RIGHT:case VK_SPACE:movePage(1);break;case VK_LEFT:case VK_BACK:movePage(-1);break;case VK_ESCAPE:if(g_fullscreen)toggleFullscreen();else DestroyWindow(h);break;case VK_RETURN:case VK_F11:toggleFullscreen();break;case 'F':g_fit=true;InvalidateRect(h,nullptr,FALSE);break;case '1':g_fit=false;g_zoom=1;InvalidateRect(h,nullptr,FALSE);break;case 'O':if(GetKeyState(VK_CONTROL)&0x8000){wchar_t f[MAX_PATH]{};OPENFILENAMEW of{sizeof(of)};of.hwndOwner=h;of.lpstrFile=f;of.nMaxFile=MAX_PATH;of.lpstrFilter=L"Images and archives\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.webp;*.avif;*.zip;*.cbz\0All files\0*.*\0";of.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST;if(GetOpenFileNameW(&of))openPath(f);}break;}return 0;case WM_DROPFILES:{HDROP d=(HDROP)w;wchar_t p[MAX_PATH]{};if(DragQueryFileW(d,0,p,MAX_PATH))openPath(p);DragFinish(d);return 0;}case WM_DESTROY:PostQuitMessage(0);return 0;}return DefWindowProcW(h,m,w,l);}
+static LRESULT CALLBACK wndProc(HWND h,UINT m,WPARAM w,LPARAM l){switch(m){case WM_SIZE:if(g_target)g_target->Resize(D2D1::SizeU(LOWORD(l),HIWORD(l)));InvalidateRect(h,nullptr,FALSE);return 0;case WM_PAINT:{PAINTSTRUCT ps;BeginPaint(h,&ps);ensureTarget();render();EndPaint(h,&ps);return 0;}case WM_MOUSEWHEEL:if(!(GetKeyState(VK_CONTROL)&0x8000))movePage(GET_WHEEL_DELTA_WPARAM(w)<0?1:-1);else{g_fit=false;g_zoom*=GET_WHEEL_DELTA_WPARAM(w)>0?1.15f:0.87f;InvalidateRect(h,nullptr,FALSE);}return 0;case WM_COMMAND: if(LOWORD(w)==ID_REGISTER_SHELL){registerShell(true);MessageBoxW(h,L"右クリックメニューを登録しました。",L"MassiGra Modern",MB_ICONINFORMATION);return 0;} if(LOWORD(w)==ID_UNREGISTER_SHELL){registerShell(false);MessageBoxW(h,L"右クリックメニューを解除しました。",L"MassiGra Modern",MB_ICONINFORMATION);return 0;} return 0;case WM_KEYDOWN:if((GetKeyState(VK_CONTROL)&0x8000)&&(w==VK_NEXT||w==VK_PRIOR)){jumpContainer(w==VK_NEXT?1:-1);return 0;}if(w=='O'&&(GetKeyState(VK_CONTROL)&0x8000)&&(GetKeyState(VK_SHIFT)&0x8000)){chooseFolder();return 0;}switch(w){case VK_RIGHT:case VK_SPACE:movePage(1);break;case VK_LEFT:case VK_BACK:movePage(-1);break;case VK_ESCAPE:if(g_fullscreen)toggleFullscreen();else DestroyWindow(h);break;case VK_RETURN:case VK_F11:toggleFullscreen();break;case 'F':g_fit=true;InvalidateRect(h,nullptr,FALSE);break;case '1':g_fit=false;g_zoom=1;InvalidateRect(h,nullptr,FALSE);break;case 'O':if(GetKeyState(VK_CONTROL)&0x8000){wchar_t f[MAX_PATH]{};OPENFILENAMEW of{sizeof(of)};of.hwndOwner=h;of.lpstrFile=f;of.nMaxFile=MAX_PATH;of.lpstrFilter=L"Images and archives\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.webp;*.avif;*.zip;*.cbz\0All files\0*.*\0";of.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST;if(GetOpenFileNameW(&of))openPath(f);}break;}return 0;case WM_DROPFILES:{HDROP d=(HDROP)w;wchar_t p[MAX_PATH]{};if(DragQueryFileW(d,0,p,MAX_PATH))openPath(p);DragFinish(d);return 0;}case WM_DESTROY:PostQuitMessage(0);return 0;}return DefWindowProcW(h,m,w,l);}
 int WINAPI wWinMain(HINSTANCE inst,HINSTANCE, PWSTR cmd,int show){CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,g_factory.GetAddressOf());WNDCLASSW wc{};wc.lpfnWndProc=wndProc;wc.hInstance=inst;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.lpszClassName=L"MassiGraModernWindow";RegisterClassW(&wc);g_hwnd=CreateWindowExW(WS_EX_ACCEPTFILES,wc.lpszClassName,L"MassiGra Modern",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1000,760,nullptr,nullptr,inst,nullptr);HMENU bar=CreateMenu();HMENU settings=CreatePopupMenu();AppendMenuW(settings,MF_STRING,ID_REGISTER_SHELL,L"右クリックメニューを登録");AppendMenuW(settings,MF_STRING,ID_UNREGISTER_SHELL,L"右クリックメニューを解除");AppendMenuW(bar,MF_POPUP,(UINT_PTR)settings,L"設定");SetMenu(g_hwnd,bar);ShowWindow(g_hwnd,show);if(cmd&&*cmd){std::wstring p=cmd;if(p.size()>=2&&p.front()==L'"'&&p.back()==L'"')p=p.substr(1,p.size()-2);openPath(p);}else{wchar_t f[MAX_PATH]{};OPENFILENAMEW of{sizeof(of)};of.hwndOwner=g_hwnd;of.lpstrFile=f;of.nMaxFile=MAX_PATH;of.lpstrFilter=L"Images and archives\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.webp;*.avif;*.zip;*.cbz\0All files\0*.*\0";of.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST;if(GetOpenFileNameW(&of))openPath(f);}MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}CoUninitialize();return (int)msg.wParam;}
