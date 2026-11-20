@@ -121,7 +121,7 @@ static void openPath(const std::wstring& p){
  if(!openPathSilent(p))MessageBoxW(g_hwnd,L"画像を読み込めませんでした。対応画像がない、書庫が暗号化されている、またはファイルが破損している可能性があります。",L"MassiGra Modern",MB_ICONWARNING);
 }
 static void jumpContainer(int direction){
- fs::path current=g_isArchive?fs::path(g_archive):(g_source.empty()?fs::path():fs::path(g_source));
+ fs::path current=g_isArchive?fs::path(g_archive):(g_source.empty()?fs::path():(imageExt(g_source)?fs::path(g_source).parent_path():fs::path(g_source)));
  if(current.empty())return;
  std::error_code ec;
  fs::path parent=current.parent_path();
